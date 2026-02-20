@@ -3,6 +3,7 @@
 
 import logging
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -52,6 +53,48 @@ def health():
     return jsonify({"ok": True})
 
 
+_MAX_OUTPUT = 32 * 1024  # 32 KB per stdout/stderr
+
+
+def _truncate(text: str) -> str:
+    if len(text) > _MAX_OUTPUT:
+        return text[:_MAX_OUTPUT] + "...(truncated)"
+    return text
+
+
+def _exec_step(i: int, step: dict) -> dict:
+    step_type = step.get("type")
+
+    if step_type != "shell":
+        return {"i": i, "type": step_type, "error": "unknown step type"}
+
+    cmd = step.get("cmd", "")
+    if not cmd:
+        return {"i": i, "type": "shell", "cmd": cmd, "error": "empty cmd"}
+
+    try:
+        proc = subprocess.run(
+            cmd, shell=True, capture_output=True, text=True, timeout=10,
+        )
+        return {
+            "i": i,
+            "type": "shell",
+            "cmd": cmd,
+            "returncode": proc.returncode,
+            "stdout": _truncate(proc.stdout),
+            "stderr": _truncate(proc.stderr),
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "i": i,
+            "type": "shell",
+            "cmd": cmd,
+            "returncode": -1,
+            "stdout": "",
+            "stderr": "timeout",
+        }
+
+
 @app.post("/run")
 def run():
     err = _check_token()
@@ -64,14 +107,12 @@ def run():
     if DEBUG:
         log.debug("/run payload: %s", payload)
 
-    # MVP echo — replace with real execution later
+    results = [_exec_step(i, step) for i, step in enumerate(steps)]
+
     return jsonify({
         "ok": True,
-        "result": {
-            "message": "executor received",
-            "steps_count": len(steps),
-            "input": payload,
-        },
+        "steps_count": len(steps),
+        "results": results,
         "artifacts": [],
     })
 
